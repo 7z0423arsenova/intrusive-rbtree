@@ -188,25 +188,13 @@ public:
   template <typename Pred, typename OnPop>
   std::size_t PopWhile(Pred pred, OnPop on_pop);
 
-  // O(n). Verifies RB invariants, BST order, parent/child links, linked state,
-  // subtree size, cached root/min, and header identity (right == self).
-  bool CheckInvariants() const;
-
 private:
-  struct CheckResult {
-    bool ok{true};
-    int black_height{0};
-    std::size_t count{0};
-    const Node* min{nullptr};
-  };
-
   Node sentinel_{};
   std::size_t size_{0};
   Node* sentinel() noexcept { return &sentinel_; }
   const Node* sentinel() const noexcept { return &sentinel_; }
 
   Node* root() noexcept { return sentinel_.parent(); }
-  const Node* root() const noexcept { return sentinel_.parent(); }
   void set_root(Node* node) noexcept {
     sentinel_.set_parent(node);
     node->set_parent(sentinel());
@@ -227,8 +215,7 @@ private:
 
   // Precondition for a useful result: node is linked. Walks parent links until
   // IsHeader. Stopping there avoids following sentinel.parent (the root cache).
-  // Returns nullptr if the chain is broken, cyclic, or node is not linked, so
-  // CheckInvariants can fail instead of asserting.
+  // Returns nullptr if the chain is broken, cyclic, or node is not linked.
   const Node* HeaderOf(const Node* node) const noexcept {
     if (node == nullptr || !node->InTree()) {
       return nullptr;
@@ -253,9 +240,6 @@ private:
 
   Node* Minimum(Node* node);
   Node* Next(Node* node);
-
-  CheckResult CheckSubtree(const Node* node, const Node* parent, const Node* lower,
-                           const Node* upper) const;
 
   void Transplant(Node* src, Node* dst);
   void LeftRotate(Node* pivot);
@@ -783,89 +767,6 @@ void IRBT_TYPE::Clear() noexcept {
   sentinel_.set_right(&sentinel_);
   sentinel_.set_red(false);
   size_ = 0;
-}
-
-IRBT_TMPL
-auto IRBT_TYPE::CheckSubtree(const Node* node, const Node* parent, const Node* lower,
-                             const Node* upper) const -> typename IRBT_TYPE::CheckResult {
-  if (node == sentinel()) {
-    return {};
-  }
-
-  CheckResult result{};
-  result.ok = false;
-
-  if (node == nullptr || parent == nullptr) {
-    return result;
-  }
-  if (!node->InTree() || IsHeader(node)) {
-    return result;
-  }
-  if (node->parent() != parent) {
-    return result;
-  }
-  if (node->left() == nullptr || node->right() == nullptr) {
-    return result;
-  }
-
-  auto* elem = elem_of(const_cast<Node*>(node));
-  if (kLess(elem, elem)) {
-    return result;
-  }
-  if (lower != nullptr && kLess(elem, elem_of(const_cast<Node*>(lower)))) {
-    return result;
-  }
-  if (upper != nullptr && kLess(elem_of(const_cast<Node*>(upper)), elem)) {
-    return result;
-  }
-
-  if (IsRed(node) && (IsRed(node->left()) || IsRed(node->right()))) {
-    return result;
-  }
-
-  auto left = CheckSubtree(node->left(), node, lower, node);
-  if (!left.ok) {
-    return result;
-  }
-
-  auto right = CheckSubtree(node->right(), node, node, upper);
-  if (!right.ok) {
-    return result;
-  }
-
-  if (left.black_height != right.black_height) {
-    return result;
-  }
-
-  result.ok = true;
-  result.black_height = left.black_height + (IsBlack(node) ? 1 : 0);
-  result.count = left.count + right.count + 1;
-  result.min = left.count == 0 ? node : left.min;
-  return result;
-}
-
-IRBT_TMPL
-auto IRBT_TYPE::CheckInvariants() const -> bool {
-  if (!IsBlack(sentinel()) || sentinel()->InTree() || !IsHeader(sentinel())) {
-    return false;
-  }
-
-  if (root() == nullptr || min() == nullptr) {
-    return false;
-  }
-
-  if (root() == sentinel()) {
-    return size_ == 0 && min() == sentinel();
-  }
-  if (size_ == 0 || min() == sentinel() || root()->parent() != sentinel() || IsRed(root())) {
-    return false;
-  }
-  if (HeaderOf(root()) != sentinel() || HeaderOf(min()) != sentinel()) {
-    return false;
-  }
-
-  auto result = CheckSubtree(root(), sentinel(), nullptr, nullptr);
-  return result.ok && result.count == size_ && result.min == min();
 }
 
 #undef IRBT_TMPL

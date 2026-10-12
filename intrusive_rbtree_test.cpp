@@ -16,6 +16,80 @@
     }                                                                   \
   } while (0)
 
+// RBTreeNode befriends every IntrusiveTree specialization, so this test-only
+// specialization can read the private node links for CheckInvariants.
+template <>
+class IntrusiveTree<void, 0, void> {
+public:
+  template <class Node>
+  static Node* Parent(const Node* node) { return node->parent(); }
+  template <class Node>
+  static Node* Left(const Node* node) { return node->left(); }
+  template <class Node>
+  static Node* Right(const Node* node) { return node->right(); }
+  template <class Node>
+  static bool Red(const Node* node) { return node->red(); }
+};
+using Links = IntrusiveTree<void, 0, void>;
+
+struct CheckResult {
+  bool ok;
+  int black_height;
+  std::size_t count;
+};
+
+// O(n). Verifies RB colors and black heights, BST order (equal keys allowed),
+// parent/child links, linked state, size, and the sentinel's cached root/min.
+template <class T, auto kLess, class Tag>
+static bool CheckInvariants(const IntrusiveTree<T, kLess, Tag>& tree) {
+  using Node = RBTreeNode<T, Tag>;
+  const T* earliest = tree.Earliest();
+  if (earliest == nullptr) return tree.Size() == 0;
+
+  // Walk up from the cached minimum to the sentinel, the only node that is its
+  // own right child.
+  const Node* min = earliest;
+  const Node* nil = min;
+  for (std::size_t steps = 0; Links::Right(nil) != nil; ++steps) {
+    if (steps == tree.Size()) return false;
+    nil = Links::Parent(nil);
+    if (nil == nullptr) return false;
+  }
+  const Node* root = Links::Parent(nil);
+  if (Links::Red(nil) || nil->InTree() || root == nil || Links::Parent(root) != nil ||
+      Links::Red(root)) {
+    return false;
+  }
+
+  auto check_subtree = [&](this auto& self, const Node* node, const Node* parent,
+                           const T* lower, const T* upper) -> CheckResult {
+    if (node == nil) return {true, 0, 0};
+    const CheckResult bad{false, 0, 0};
+    if (node == nullptr || !node->InTree() || Links::Parent(node) != parent ||
+        Links::Left(node) == nullptr || Links::Right(node) == nullptr) {
+      return bad;
+    }
+    const T* elem = static_cast<const T*>(node);
+    if (kLess(elem, elem) || (lower != nullptr && kLess(elem, lower)) ||
+        (upper != nullptr && kLess(upper, elem))) {
+      return bad;
+    }
+    if (Links::Red(node) && (Links::Red(Links::Left(node)) || Links::Red(Links::Right(node)))) {
+      return bad;
+    }
+    CheckResult left = self(Links::Left(node), node, lower, elem);
+    CheckResult right = self(Links::Right(node), node, elem, upper);
+    if (!left.ok || !right.ok || left.black_height != right.black_height) return bad;
+    return {true, left.black_height + (Links::Red(node) ? 0 : 1), left.count + right.count + 1};
+  };
+  CheckResult result = check_subtree(root, nil, nullptr, nullptr);
+  if (!result.ok || result.count != tree.Size()) return false;
+
+  const Node* leftmost = root;
+  while (Links::Left(leftmost) != nil) leftmost = Links::Left(leftmost);
+  return leftmost == min;
+}
+
 struct Item : RBTreeNode<Item> {
   int key = 0;
 };
@@ -49,9 +123,9 @@ static void TestRandomOps(bool unique) {
     }
     CHECK(tree.Size() == keys.size());
     CHECK(keys.empty() ? tree.Earliest() == nullptr : tree.Earliest()->key == *keys.begin());
-    if (op % 997 == 0) CHECK(tree.CheckInvariants());
+    if (op % 997 == 0) CHECK(CheckInvariants(tree));
   }
-  CHECK(tree.CheckInvariants());
+  CHECK(CheckInvariants(tree));
 
   auto popped = tree.ExtractPrefix([=](const Item* e) { return e->key < 100 * scale; });
   CHECK(std::is_sorted(popped.begin(), popped.end(), ItemLess));
@@ -61,7 +135,7 @@ static void TestRandomOps(bool unique) {
   }
   CHECK(tree.Size() == keys.size());
   CHECK(tree.Empty() || tree.Earliest()->key >= 100 * scale);
-  CHECK(tree.CheckInvariants());
+  CHECK(CheckInvariants(tree));
 
   int last = -1;
   std::size_t seen = 0;
@@ -73,10 +147,10 @@ static void TestRandomOps(bool unique) {
                                   ++seen;
                                 });
   CHECK(n == seen && tree.Size() == keys.size());
-  CHECK(tree.CheckInvariants());
+  CHECK(CheckInvariants(tree));
 
   tree.Clear();
-  CHECK(tree.Empty() && tree.Earliest() == nullptr && tree.CheckInvariants());
+  CHECK(tree.Empty() && tree.Earliest() == nullptr && CheckInvariants(tree));
   for (int i = 0; i < kN; ++i) CHECK(!items[i].InTree());
 }
 
@@ -120,7 +194,7 @@ static void TestMultipleHooks() {
   CHECK(!static_cast<HookA&>(items[0]).InTree());
   CHECK(static_cast<HookB&>(items[0]).InTree());
   CHECK(by_a.Size() + 1 == by_b.Size());
-  CHECK(by_a.CheckInvariants() && by_b.CheckInvariants());
+  CHECK(CheckInvariants(by_a) && CheckInvariants(by_b));
 }
 
 // Equal keys are legal: Insert sends them right and rotations may move them
@@ -130,7 +204,7 @@ static void TestEqualKeys() {
   a.key = b.key = c.key = 1;
   Tree tree;
   CHECK(tree.Insert(&a) && tree.Insert(&b) && tree.Insert(&c));
-  CHECK(tree.CheckInvariants());
+  CHECK(CheckInvariants(tree));
 }
 
 // Mutating a linked key breaks the kLess contract on purpose: CheckInvariants
@@ -147,11 +221,11 @@ static void TestCheckInvariantsDetectsDisorder() {
     for (int key : {i - 2, i - 1, i + 1, i + 2, -1000, 1000}) {
       items[i].key = key;
       const bool sorted = (i == 0 || key >= i - 1) && (i == kN - 1 || key <= i + 1);
-      CHECK(tree.CheckInvariants() == sorted);
+      CHECK(CheckInvariants(tree) == sorted);
     }
     items[i].key = i;
   }
-  CHECK(tree.CheckInvariants());
+  CHECK(CheckInvariants(tree));
 }
 
 int main() {
